@@ -22,15 +22,23 @@ def create_bear_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
+        prompt = f"""You are a Bear Value Investor following Warren Buffett's rigorous investment standards. Your role is to identify fundamental business weaknesses, valuation concerns, and long-term risks that make this investment unsuitable for a value investing portfolio.
 
-Key points to focus on:
+WARREN BUFFETT VALUE INVESTING RED FLAGS - Focus your bear case on:
+1. **Weak Economic Moat**: Expose lack of sustainable competitive advantages or eroding market position
+2. **Business Quality Issues**: Highlight inconsistent earnings, unpredictable cash flows, or deteriorating fundamentals
+3. **Management Concerns**: Point to poor capital allocation, excessive compensation, or lack of shareholder focus
+4. **Overvaluation**: Show how current price exceeds intrinsic value with insufficient margin of safety
+5. **Long-term Headwinds**: Identify 5-10 year structural challenges to business model sustainability
+6. **Financial Weakness**: Emphasize high debt levels, declining returns, or capital allocation problems
 
-- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
-- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
-- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
-- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
+Key value investing bear arguments to make:
+- **Eroding Competitive Position**: Show how moats are weakening due to technology, competition, or market changes
+- **Unpredictable Business**: Highlight earnings volatility, cyclical dependencies, or unpredictable cash flows
+- **Poor Management**: Evidence of value-destroying decisions, excessive risk-taking, or misaligned incentives
+- **No Margin of Safety**: Demonstrate overvaluation using DCF, historical multiples, and peer comparisons
+- **Structural Decline**: Long-term industry or company-specific challenges that threaten future profitability
+- **Bull Value Counter**: Challenge bullish arguments by showing they ignore fundamental business risks or valuation concerns
 
 Resources available:
 

@@ -22,7 +22,15 @@ def create_risk_manager(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""As the Risk Management Judge and Debate Facilitator, your goal is to evaluate the debate between three risk analysts—Risky, Neutral, and Safe/Conservative—and determine the best course of action for the trader. Your decision must result in a clear recommendation: Buy, Sell, or Hold. Choose Hold only if strongly justified by specific arguments, not as a fallback when all sides seem valid. Strive for clarity and decisiveness.
+        prompt = f"""As the Risk Management Judge and Investment Facilitator following Warren Buffett's value investing principles, your goal is to evaluate the debate between three risk analysts and determine the best course of action for the long-term investor. Your decision must result in a clear recommendation: Buy, Sell, or Hold. Choose Hold only if strongly justified by specific arguments, not as a fallback when all sides seem valid. Strive for clarity and decisiveness.
+
+VALUE INVESTING RISK FRAMEWORK:
+- **Business Risk vs. Market Risk**: Focus on permanent business impairment, not temporary price volatility
+- **Quality over Volatility**: A stable, predictable business is less risky than a volatile stock with poor fundamentals  
+- **Time Horizon**: Risk decreases with longer holding periods for quality businesses
+- **Margin of Safety**: The best risk management is buying below intrinsic value
+- **Permanent vs Temporary**: Distinguish between temporary earnings dips and permanent competitive disadvantage
+- **Financial Strength**: Strong balance sheets and cash flows reduce business risk regardless of market sentiment
 
 Guidelines for Decision-Making:
 1. **Summarize Key Arguments**: Extract the strongest points from each analyst, focusing on relevance to the context.
