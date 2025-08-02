@@ -57,18 +57,9 @@ class TradingAgentsGraph:
             exist_ok=True,
         )
 
-        # Initialize LLMs
-        if self.config["llm_provider"].lower() == "openai" or self.config["llm_provider"] == "ollama" or self.config["llm_provider"] == "openrouter":
-            self.deep_thinking_llm = ChatOpenAI(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatOpenAI(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "anthropic":
-            self.deep_thinking_llm = ChatAnthropic(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatAnthropic(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "google":
-            self.deep_thinking_llm = ChatGoogleGenerativeAI(model=self.config["deep_think_llm"])
-            self.quick_thinking_llm = ChatGoogleGenerativeAI(model=self.config["quick_think_llm"])
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
+        # Initialize LLMs based on model names and provider
+        self.deep_thinking_llm = self._create_llm(self.config["deep_think_llm"])
+        self.quick_thinking_llm = self._create_llm(self.config["quick_think_llm"])
         
         self.toolkit = Toolkit(config=self.config)
 
@@ -109,8 +100,57 @@ class TradingAgentsGraph:
         # Set up the graph
         self.graph = self.graph_setup.setup_graph(selected_analysts)
 
+    def _create_llm(self, model_name: str):
+        """Create the appropriate LLM client based on model name and configuration."""
+        # Determine provider based on model name
+        if model_name.startswith("gemini") or model_name.startswith("google"):
+            # Google Gemini models
+            if not self.config.get("google_api_key"):
+                raise ValueError("GOOGLE_API_KEY environment variable is required for Gemini models")
+            return ChatGoogleGenerativeAI(
+                model=model_name,
+                google_api_key=self.config["google_api_key"]
+            )
+        elif model_name.startswith("claude") or self.config["llm_provider"].lower() == "anthropic":
+            # Anthropic Claude models
+            if not self.config.get("anthropic_api_key"):
+                raise ValueError("ANTHROPIC_API_KEY environment variable is required for Claude models")
+            return ChatAnthropic(
+                model=model_name,
+                api_key=self.config["anthropic_api_key"],
+                base_url=self.config.get("backend_url", "https://api.anthropic.com")
+            )
+        else:
+            # OpenAI models (including OpenAI-compatible APIs like Ollama)
+            api_key = self.config.get("openai_api_key", "ollama")  # Default for Ollama
+            base_url = self.config.get("openai_api_base", self.config.get("backend_url", "https://api.openai.com/v1"))
+            
+            return ChatOpenAI(
+                model=model_name,
+                api_key=api_key,
+                base_url=base_url
+            )
+
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources."""
+        # Determine if we're using Google models to select appropriate tools
+        using_gemini = (
+            self.config["deep_think_llm"].startswith("gemini") or 
+            self.config["quick_think_llm"].startswith("gemini") or
+            self.config["deep_think_llm"].startswith("google") or 
+            self.config["quick_think_llm"].startswith("google")
+        )
+        
+        # Select appropriate news/fundamentals tools based on model
+        if using_gemini:
+            stock_news_tool = self.toolkit.get_stock_news_google
+            global_news_tool = self.toolkit.get_global_news_google
+            fundamentals_tool = self.toolkit.get_fundamentals_google
+        else:
+            stock_news_tool = self.toolkit.get_stock_news_openai
+            global_news_tool = self.toolkit.get_global_news_openai
+            fundamentals_tool = self.toolkit.get_fundamentals_openai
+        
         return {
             "market": ToolNode(
                 [
@@ -125,7 +165,7 @@ class TradingAgentsGraph:
             "social": ToolNode(
                 [
                     # online tools
-                    self.toolkit.get_stock_news_openai,
+                    stock_news_tool,
                     # offline tools
                     self.toolkit.get_reddit_stock_info,
                 ]
@@ -133,7 +173,7 @@ class TradingAgentsGraph:
             "news": ToolNode(
                 [
                     # online tools
-                    self.toolkit.get_global_news_openai,
+                    global_news_tool,
                     self.toolkit.get_google_news,
                     # offline tools
                     self.toolkit.get_finnhub_news,
@@ -142,8 +182,10 @@ class TradingAgentsGraph:
             ),
             "fundamentals": ToolNode(
                 [
+                    # enhanced fundamental analysis tool (primary)
+                    self.toolkit.get_enhanced_fundamentals,
                     # online tools
-                    self.toolkit.get_fundamentals_openai,
+                    fundamentals_tool,
                     # offline tools
                     self.toolkit.get_finnhub_company_insider_sentiment,
                     self.toolkit.get_finnhub_company_insider_transactions,

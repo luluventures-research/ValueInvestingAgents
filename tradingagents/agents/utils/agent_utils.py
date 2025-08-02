@@ -287,7 +287,9 @@ class Toolkit:
             str: a report of the company's most recent balance sheet
         """
 
-        data_balance_sheet = interface.get_simfin_balance_sheet(ticker, freq, curr_date)
+        data_balance_sheet = interface.try_with_ticker_variations(
+            interface.get_simfin_balance_sheet, ticker, freq, curr_date
+        )
 
         return data_balance_sheet
 
@@ -311,7 +313,9 @@ class Toolkit:
                 str: a report of the company's most recent cash flow statement
         """
 
-        data_cashflow = interface.get_simfin_cashflow(ticker, freq, curr_date)
+        data_cashflow = interface.try_with_ticker_variations(
+            interface.get_simfin_cashflow, ticker, freq, curr_date
+        )
 
         return data_cashflow
 
@@ -335,8 +339,8 @@ class Toolkit:
                 str: a report of the company's most recent income statement
         """
 
-        data_income_stmt = interface.get_simfin_income_statements(
-            ticker, freq, curr_date
+        data_income_stmt = interface.try_with_ticker_variations(
+            interface.get_simfin_income_statements, ticker, freq, curr_date
         )
 
         return data_income_stmt
@@ -417,3 +421,85 @@ class Toolkit:
         )
 
         return openai_fundamentals_results
+
+    @staticmethod
+    @tool
+    def get_stock_news_google(
+        ticker: Annotated[str, "the company's ticker"],
+        curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    ):
+        """
+        Retrieve the latest news about a given stock by using Google Gemini API.
+        This is an alternative to get_stock_news_openai when using Google models.
+        Args:
+            ticker (str): Ticker of a company. e.g. AAPL, TSM
+            curr_date (str): Current date in yyyy-mm-dd format
+        Returns:
+            str: A formatted string containing the latest news about the company on the given date.
+        """
+
+        google_news_results = interface.get_stock_news_google(ticker, curr_date)
+
+        return google_news_results
+
+    @staticmethod
+    @tool
+    def get_global_news_google(
+        curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    ):
+        """
+        Retrieve the latest macroeconomics news on a given date using Google Gemini API.
+        This is an alternative to get_global_news_openai when using Google models.
+        Args:
+            curr_date (str): Current date in yyyy-mm-dd format
+        Returns:
+            str: A formatted string containing the latest macroeconomic news on the given date.
+        """
+
+        google_news_results = interface.get_global_news_google(curr_date)
+
+        return google_news_results
+
+    @staticmethod
+    @tool
+    def get_fundamentals_google(
+        ticker: Annotated[str, "the company's ticker"],
+        curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    ):
+        """
+        Retrieve the latest fundamental information about a given stock on a given date by using Google Gemini API.
+        This is an alternative to get_fundamentals_openai when using Google models.
+        Args:
+            ticker (str): Ticker of a company. e.g. AAPL, TSM
+            curr_date (str): Current date in yyyy-mm-dd format
+        Returns:
+            str: A formatted string containing the latest fundamental information about the company on the given date.
+        """
+
+        google_fundamentals_results = interface.get_fundamentals_google(
+            ticker, curr_date
+        )
+
+        return google_fundamentals_results
+
+    @staticmethod
+    @tool
+    def get_enhanced_fundamentals(
+        ticker: Annotated[str, "the company's ticker"],
+        curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    ):
+        """
+        Enhanced fundamental data retrieval that tries multiple sources and ticker variations.
+        Combines SimFin data, API-based fundamentals, and handles problematic tickers like BRK.B.
+        Args:
+            ticker (str): Ticker of a company. e.g. AAPL, TSM, BRK.B
+            curr_date (str): Current date in yyyy-mm-dd format
+        Returns:
+            str: Comprehensive fundamental data from multiple sources with fallbacks.
+        """
+
+        enhanced_fundamentals_results = interface.get_enhanced_fundamentals(
+            ticker, curr_date
+        )
+
+        return enhanced_fundamentals_results

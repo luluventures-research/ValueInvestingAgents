@@ -10,7 +10,19 @@ def create_social_media_analyst(llm, toolkit):
         company_name = state["company_of_interest"]
 
         if toolkit.config["online_tools"]:
-            tools = [toolkit.get_stock_news_openai]
+            # Determine which news tool to use based on model configuration
+            deep_model = toolkit.config.get("deep_think_llm", "")
+            quick_model = toolkit.config.get("quick_think_llm", "")
+            
+            using_gemini = (
+                deep_model.startswith(("gemini", "google")) or 
+                quick_model.startswith(("gemini", "google"))
+            )
+            
+            if using_gemini:
+                tools = [toolkit.get_stock_news_google]
+            else:
+                tools = [toolkit.get_stock_news_openai]
         else:
             tools = [
                 toolkit.get_reddit_stock_info,

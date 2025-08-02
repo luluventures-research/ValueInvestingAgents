@@ -499,16 +499,26 @@ def get_ticker():
 
 def get_analysis_date():
     """Get the analysis date from user input."""
+    # Use a default date that's more likely to work with LLM APIs
+    # Use December 2024 as a safe default that most APIs should support
+    default_date = "2024-12-15"
+    
     while True:
         date_str = typer.prompt(
-            "", default=datetime.datetime.now().strftime("%Y-%m-%d")
+            "Enter analysis date (YYYY-MM-DD) [Note: Use dates before 2025 for better API compatibility]", 
+            default=default_date
         )
         try:
-            # Validate date format and ensure it's not in the future
+            # Validate date format
             analysis_date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-            if analysis_date.date() > datetime.datetime.now().date():
-                console.print("[red]Error: Analysis date cannot be in the future[/red]")
-                continue
+            
+            # Check if date is too far in the future for LLM APIs
+            if analysis_date.year >= 2025:
+                console.print("[yellow]Warning: 2025 dates may not work with news APIs. Consider using 2024 dates.[/yellow]")
+                continue_anyway = typer.confirm("Continue with this date anyway?")
+                if not continue_anyway:
+                    continue
+            
             return date_str
         except ValueError:
             console.print(
@@ -789,7 +799,12 @@ def run_analysis():
                 if content:
                     file_name = f"{section_name}.md"
                     with open(report_dir / file_name, "w") as f:
-                        f.write(content)
+                        # Handle case where content is a list (e.g., from Gemini models)
+                        if isinstance(content, list):
+                            content_str = "\n\n".join(str(item) for item in content)
+                        else:
+                            content_str = str(content)
+                        f.write(content_str)
         return wrapper
 
     message_buffer.add_message = save_message_decorator(message_buffer, "add_message")

@@ -33,6 +33,12 @@ DEFAULT_CONFIG = {
     "deep_think_llm": "o4-mini",
     "quick_think_llm": "gpt-4o-mini",
     "backend_url": "https://api.openai.com/v1",
+    # API configuration
+    "openai_api_key": os.getenv("OPENAI_API_KEY"),
+    "openai_api_base": os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
+    "google_api_key": os.getenv("GOOGLE_API_KEY"),
+    "google_api_base": os.getenv("GOOGLE_API_BASE", "https://generativelanguage.googleapis.com/v1beta"),
+    "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY"),
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,

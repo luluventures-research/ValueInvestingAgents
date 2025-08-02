@@ -13,7 +13,113 @@ import pandas as pd
 from tqdm import tqdm
 import yfinance as yf
 from openai import OpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from .config import get_config, set_config, DATA_DIR
+
+# Ticker mapping for problematic symbols
+TICKER_MAPPINGS = {
+    # Berkshire Hathaway variations
+    "BRK.B": ["BRK-B", "BRKB", "BRK.B"],
+    "BRK-B": ["BRK.B", "BRKB", "BRK-B"],
+    "BRKB": ["BRK.B", "BRK-B", "BRKB"],
+    "BRK.A": ["BRK-A", "BRKA", "BRK.A"],
+    "BRK-A": ["BRK.A", "BRKA", "BRK-A"],
+    "BRKA": ["BRK.A", "BRK-A", "BRKA"],
+    # Add more mappings as needed
+    "GOOGL": ["GOOGL", "GOOG"],
+    "GOOG": ["GOOG", "GOOGL"],
+}
+
+
+def get_ticker_variations(ticker: str) -> list:
+    """Get all possible ticker variations for a given ticker."""
+    ticker_upper = ticker.upper()
+    if ticker_upper in TICKER_MAPPINGS:
+        return TICKER_MAPPINGS[ticker_upper]
+    return [ticker_upper]
+
+
+def try_with_ticker_variations(func, ticker: str, *args, **kwargs):
+    """Try a function with different ticker variations until one succeeds."""
+    variations = get_ticker_variations(ticker)
+    errors = []
+    
+    for variation in variations:
+        try:
+            result = func(variation, *args, **kwargs)
+            # Check if result is meaningful (not empty or error message)
+            if result and not result.startswith("Error") and not "not found" in result.lower():
+                return result
+        except Exception as e:
+            errors.append(f"{variation}: {str(e)}")
+            continue
+    
+    # If all variations fail, return error summary
+    return f"Unable to retrieve data for {ticker}. Tried variations: {variations}. Errors: {'; '.join(errors)}"
+
+
+def get_enhanced_fundamentals(ticker: str, curr_date: str) -> str:
+    """
+    Enhanced fundamental data retrieval with multiple sources and ticker variations.
+    Tries SimFin data first, then falls back to Google/OpenAI APIs.
+    """
+    results = []
+    
+    # Try SimFin data sources with ticker variations
+    simfin_sources = [
+        ("Balance Sheet", lambda t: get_simfin_balance_sheet(t, "annual", curr_date)),
+        ("Income Statement", lambda t: get_simfin_income_statements(t, "annual", curr_date)),
+        ("Cash Flow", lambda t: get_simfin_cashflow(t, "annual", curr_date)),
+    ]
+    
+    for source_name, source_func in simfin_sources:
+        result = try_with_ticker_variations(source_func, ticker)
+        if result and not result.startswith("Unable to retrieve"):
+            results.append(f"## {source_name} Data:\n{result}")
+        else:
+            results.append(f"## {source_name} Data: Not available ({result})")
+    
+    # Try quarterly data as fallback
+    if not any("available" not in r for r in results):
+        quarterly_sources = [
+            ("Quarterly Balance Sheet", lambda t: get_simfin_balance_sheet(t, "quarterly", curr_date)),
+            ("Quarterly Income Statement", lambda t: get_simfin_income_statements(t, "quarterly", curr_date)),
+        ]
+        
+        for source_name, source_func in quarterly_sources:
+            result = try_with_ticker_variations(source_func, ticker)
+            if result and not result.startswith("Unable to retrieve"):
+                results.append(f"## {source_name} Data:\n{result}")
+    
+    # If SimFin data is insufficient, try API-based fundamentals
+    if len([r for r in results if "Not available" not in r]) < 2:
+        config = get_config()
+        api_result = ""
+        
+        # Try Google API if using Gemini models
+        if (config.get("quick_think_llm", "").startswith(("gemini", "google")) or 
+            config.get("deep_think_llm", "").startswith(("gemini", "google"))):
+            try:
+                api_result = get_fundamentals_google(ticker, curr_date)
+            except:
+                pass
+        
+        # Fallback to OpenAI API
+        if not api_result:
+            try:
+                api_result = get_fundamentals_openai(ticker, curr_date)
+            except:
+                pass
+        
+        if api_result:
+            results.append(f"## API-Based Fundamental Data:\n{api_result}")
+    
+    # Combine all results
+    if results:
+        header = f"# Comprehensive Fundamental Analysis for {ticker} as of {curr_date}\n\n"
+        return header + "\n\n".join(results)
+    else:
+        return f"Unable to retrieve fundamental data for {ticker}. Consider using alternative tickers or checking data availability."
 
 
 def get_finnhub_news(
@@ -287,15 +393,22 @@ def get_google_news(
     curr_date: Annotated[str, "Curr date in yyyy-mm-dd format"],
     look_back_days: Annotated[int, "how many days to look back"],
 ) -> str:
+    from .googlenews_utils import getNewsDataWithFallback
+    
     query = query.replace(" ", "+")
 
-    start_date = datetime.strptime(curr_date, "%Y-%m-%d")
-    before = start_date - relativedelta(days=look_back_days)
-    before = before.strftime("%Y-%m-%d")
-
-    news_results = getNewsData(query, before, curr_date)
+    # Use intelligent fallback to get the most recent available data
+    result = getNewsDataWithFallback(query, curr_date, max_lookback_days=look_back_days)
+    
+    news_results = result["data"]
+    actual_date_range = result["actual_date_range"]
+    fallback_used = result["fallback_used"]
 
     news_str = ""
+    
+    # Add data quality note if fallback was used
+    if fallback_used:
+        news_str += f"**Data Quality Note**: Target date {curr_date} data not available. Using most recent data from {actual_date_range}.\n\n"
 
     for news in news_results:
         news_str += (
@@ -303,9 +416,11 @@ def get_google_news(
         )
 
     if len(news_results) == 0:
+        if "error" in result:
+            return f"## {query} Google News Search Result:\n\nNo news data found for {query} within {look_back_days} days of {curr_date}. {result.get('description', '')}"
         return ""
 
-    return f"## {query} Google News, from {before} to {curr_date}:\n\n{news_str}"
+    return f"## {query} Google News, from {actual_date_range}:\n\n{news_str}"
 
 
 def get_reddit_global_news(
@@ -704,7 +819,15 @@ def get_YFin_data(
 
 def get_stock_news_openai(ticker, curr_date):
     config = get_config()
-    client = OpenAI(base_url=config["backend_url"])
+    
+    if not config.get("openai_api_key"):
+        return "Error: OPENAI_API_KEY is required for OpenAI news functionality. Please set the environment variable or use get_stock_news_google as an alternative."
+    
+    # Always use OpenAI API for OpenAI-specific functions
+    client = OpenAI(
+        api_key=config.get("openai_api_key"),
+        base_url=config.get("openai_api_base", "https://api.openai.com/v1")
+    )
 
     response = client.responses.create(
         model=config["quick_think_llm"],
@@ -737,9 +860,263 @@ def get_stock_news_openai(ticker, curr_date):
     return response.output[1].content[0].text
 
 
+def get_fundamentals_openai(ticker, curr_date):
+    config = get_config()
+    
+    if not config.get("openai_api_key"):
+        return "Error: OPENAI_API_KEY is required for OpenAI fundamentals functionality. Please set the environment variable or use get_fundamentals_google/get_enhanced_fundamentals as alternatives."
+    
+    # Always use OpenAI API for OpenAI-specific functions
+    client = OpenAI(
+        api_key=config.get("openai_api_key"),
+        base_url=config.get("openai_api_base", "https://api.openai.com/v1")
+    )
+
+    response = client.responses.create(
+        model=config["quick_think_llm"],
+        input=[
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": f"Can you search Fundamental for discussions on {ticker} during of the month before {curr_date} to the month of {curr_date}. Make sure you only get the data posted during that period. List as a table, with PE/PS/Cash flow/ etc",
+                    }
+                ],
+            }
+        ],
+        text={"format": {"type": "text"}},
+        reasoning={},
+        tools=[
+            {
+                "type": "web_search_preview",
+                "user_location": {"type": "approximate"},
+                "search_context_size": "low",
+            }
+        ],
+        temperature=1,
+        max_output_tokens=4096,
+        top_p=1,
+        store=True,
+    )
+
+    return response.output[1].content[0].text
+
+
+def get_stock_news_google(ticker, curr_date):
+    """
+    Retrieve the latest news about a given stock using Google Gemini API.
+    This is an alternative to get_stock_news_openai when using Google models.
+    """
+    config = get_config()
+    
+    if not config.get("google_api_key"):
+        return "Error: Google API key not configured. Please set GOOGLE_API_KEY environment variable."
+    
+    try:
+        from datetime import datetime, timedelta
+        
+        # Parse the current date and calculate fallback dates
+        try:
+            target_date = datetime.strptime(curr_date, "%Y-%m-%d")
+            one_week_ago = (target_date - timedelta(days=7)).strftime("%Y-%m-%d")
+            one_month_ago = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+        except:
+            target_date = datetime.now()
+            one_week_ago = (target_date - timedelta(days=7)).strftime("%Y-%m-%d")
+            one_month_ago = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+            curr_date = target_date.strftime("%Y-%m-%d")
+        
+        client = ChatGoogleGenerativeAI(
+            model=config["quick_think_llm"],
+            google_api_key=config["google_api_key"]
+        )
+        
+        prompt = f"""Provide a comprehensive analysis of {ticker} for investment decisions. Target analysis date: {curr_date}
+
+        **Priority 1: Try to find information as close to {curr_date} as possible**
+        **Priority 2: If {curr_date} data unavailable, use the most recent data before this date**
+        **Priority 3: Focus on data from the past week ({one_week_ago} to {curr_date}) if available**
+        **Priority 4: Fall back to data from the past month ({one_month_ago} to {curr_date}) if needed**
+
+        Please provide:
+        1. **Recent News & Developments**: Latest company announcements, earnings, strategic changes
+        2. **Social Media Sentiment**: Market discussions, investor sentiment, trending topics
+        3. **Financial Performance**: Recent financial metrics, analyst ratings, price movements
+        4. **Market Context**: Industry trends, competitive landscape, regulatory changes
+        5. **Investment Signals**: Buy/sell recommendations, target prices, risk factors
+
+        **IMPORTANT INSTRUCTIONS:**
+        - Always specify the actual date range of the information you're providing
+        - If you cannot find data for {curr_date}, clearly state what date range you're using instead
+        - Prioritize the most recent available information before {curr_date}
+        - If using older data, explain why more recent data isn't available
+        - Structure your response with clear headings and cite timeframes for each section
+
+        **Data Quality Note**: Please indicate the confidence level and recency of your information sources."""
+        
+        response = client.invoke(prompt)
+        return response.content
+        
+    except Exception as e:
+        return f"Error retrieving news with Google API: {str(e)}. Attempting to fall back to alternative news sources or cached data if available."
+
+
+def get_global_news_google(curr_date):
+    """
+    Retrieve global/macroeconomic news using Google Gemini API.
+    This is an alternative to get_global_news_openai when using Google models.
+    """
+    config = get_config()
+    
+    if not config.get("google_api_key"):
+        return "Error: Google API key not configured. Please set GOOGLE_API_KEY environment variable."
+    
+    try:
+        client = ChatGoogleGenerativeAI(
+            model=config["quick_think_llm"],
+            google_api_key=config["google_api_key"]
+        )
+        
+        # Calculate fallback date ranges
+        from datetime import datetime, timedelta
+        
+        try:
+            target_date = datetime.strptime(curr_date, "%Y-%m-%d")
+            one_week_ago = (target_date - timedelta(days=7)).strftime("%Y-%m-%d")
+            two_weeks_ago = (target_date - timedelta(days=14)).strftime("%Y-%m-%d")
+            one_month_ago = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+        except:
+            target_date = datetime.now()
+            one_week_ago = (target_date - timedelta(days=7)).strftime("%Y-%m-%d")
+            two_weeks_ago = (target_date - timedelta(days=14)).strftime("%Y-%m-%d")
+            one_month_ago = (target_date - timedelta(days=30)).strftime("%Y-%m-%d")
+            curr_date = target_date.strftime("%Y-%m-%d")
+        
+        prompt = f"""Provide comprehensive global macroeconomic analysis for investment decisions. Target date: {curr_date}
+
+        **Data Priority Strategy:**
+        1. **Primary**: Information as close to {curr_date} as possible
+        2. **Fallback 1**: Most recent data from the past week ({one_week_ago} to {curr_date})
+        3. **Fallback 2**: Data from past two weeks ({two_weeks_ago} to {curr_date})
+        4. **Fallback 3**: Data from past month ({one_month_ago} to {curr_date})
+
+        **Required Analysis Areas:**
+        1. **Monetary Policy**: Federal Reserve decisions, interest rate changes, quantitative easing
+        2. **Economic Indicators**: GDP growth, inflation (CPI/PCE), employment data, consumer confidence
+        3. **Geopolitical Events**: Trade wars, sanctions, military conflicts affecting markets
+        4. **Central Bank Actions**: ECB, Bank of Japan, Bank of England policy changes
+        5. **Market Dynamics**: VIX levels, currency fluctuations, commodity prices
+        6. **Risk Assessment**: Systemic risks, market volatility drivers, crisis indicators
+
+        **Critical Instructions:**
+        - **ALWAYS specify the actual date range** of information you're providing
+        - If {curr_date} data is unavailable, clearly state what earlier period you're analyzing
+        - Prioritize the most recent available information before {curr_date}
+        - Explain any data gaps or limitations
+        - Focus on events and trends that impact investment decisions
+        - Structure with clear headings showing timeframes
+
+        **Output Requirements:**
+        - Begin with a data quality disclaimer showing your information timeframe
+        - Use recent data even if it's from before {curr_date}
+        - Indicate confidence levels for different types of information"""
+        
+        response = client.invoke(prompt)
+        return response.content
+        
+    except Exception as e:
+        return f"Error retrieving global news with Google API: {str(e)}. You may want to try using alternative news sources like get_google_news or get_reddit_news."
+
+
+def get_fundamentals_google(ticker, curr_date):
+    """
+    Retrieve fundamental analysis information using Google Gemini API.
+    This is an alternative to get_fundamentals_openai when using Google models.
+    """
+    config = get_config()
+    
+    if not config.get("google_api_key"):
+        return "Error: Google API key not configured. Please set GOOGLE_API_KEY environment variable."
+    
+    try:
+        client = ChatGoogleGenerativeAI(
+            model=config["quick_think_llm"],
+            google_api_key=config["google_api_key"],
+            temperature=0.1,
+            max_output_tokens=4000
+        )
+        
+        # Calculate fallback date ranges for fundamental analysis
+        from datetime import datetime, timedelta
+        
+        try:
+            target_date = datetime.strptime(curr_date, "%Y-%m-%d")
+            one_quarter_ago = (target_date - timedelta(days=90)).strftime("%Y-%m-%d")
+            six_months_ago = (target_date - timedelta(days=180)).strftime("%Y-%m-%d")
+            one_year_ago = (target_date - timedelta(days=365)).strftime("%Y-%m-%d")
+        except:
+            target_date = datetime.now()
+            one_quarter_ago = (target_date - timedelta(days=90)).strftime("%Y-%m-%d")
+            six_months_ago = (target_date - timedelta(days=180)).strftime("%Y-%m-%d")
+            one_year_ago = (target_date - timedelta(days=365)).strftime("%Y-%m-%d")
+            curr_date = target_date.strftime("%Y-%m-%d")
+        
+        prompt = f"""Provide comprehensive fundamental analysis for {ticker}. Target analysis date: {curr_date}
+
+        **Data Priority Strategy:**
+        1. **Primary**: Most recent financial data available as of {curr_date}
+        2. **Fallback 1**: Latest quarterly data (within past 3 months from {one_quarter_ago})
+        3. **Fallback 2**: Recent semi-annual data (within 6 months from {six_months_ago})
+        4. **Fallback 3**: Annual data (within past year from {one_year_ago})
+
+        **REQUIRED FUNDAMENTAL ANALYSIS:**
+        1. **Current Valuation Metrics**: P/E, P/B, EV/EBITDA, P/S ratios with effective dates
+        2. **Profitability Analysis**: ROE, ROA, ROIC, gross/operating/net margins with trend analysis
+        3. **Growth Assessment**: Revenue, earnings, FCF growth (YoY, 3Y, 5Y trends where available)
+        4. **Balance Sheet Health**: Debt ratios, liquidity, cash position, working capital trends
+        5. **Recent Financial Performance**: Latest quarterly results, YoY comparisons, guidance updates
+        6. **Competitive Position**: Industry ranking, market share, competitive advantages
+        7. **Investment Quality Scores**: Dividend yield, payout ratio, earnings quality, management effectiveness
+
+        **CRITICAL REQUIREMENTS:**
+        - **Always specify the exact date/quarter** of financial data you're referencing
+        - If {curr_date} data unavailable, clearly state what period you're analyzing instead
+        - Use the most recent available data before {curr_date}
+        - Compare current metrics to historical averages (3-5 year trends)
+        - Include data quality disclaimers for any estimates or outdated information
+        - Prioritize accuracy over completeness - better to provide recent verified data than guess
+
+        **Output Format:**
+        - Start with data quality note specifying your information timeframe
+        - Use specific numbers with dates/quarters where available
+        - Flag any significant data gaps or limitations
+        - Structure with clear headings showing data recency"""
+        
+        response = client.invoke(prompt)
+        
+        if response and response.content and len(response.content.strip()) > 50:
+            return f"# Google Fundamentals Analysis for {ticker}\n\n{response.content}"
+        else:
+            return f"Google API returned insufficient data for {ticker}. Try using get_enhanced_fundamentals for comprehensive fundamental analysis from multiple sources."
+        
+    except Exception as e:
+        error_msg = f"Error retrieving fundamentals with Google API: {str(e)}"
+        fallback_msg = "Available alternative tools: get_enhanced_fundamentals, get_simfin_balance_sheet, get_simfin_income_stmt, get_simfin_cashflow"
+        return f"{error_msg}\n\n{fallback_msg}"
+
+
 def get_global_news_openai(curr_date):
     config = get_config()
-    client = OpenAI(base_url=config["backend_url"])
+    
+    if not config.get("openai_api_key"):
+        return "Error: OPENAI_API_KEY is required for OpenAI news functionality. Please set the environment variable or use get_global_news_google as an alternative."
+    
+    # Always use OpenAI API for OpenAI-specific functions
+    client = OpenAI(
+        api_key=config.get("openai_api_key"),
+        base_url=config.get("openai_api_base", "https://api.openai.com/v1")
+    )
 
     response = client.responses.create(
         model=config["quick_think_llm"],
@@ -774,7 +1151,15 @@ def get_global_news_openai(curr_date):
 
 def get_fundamentals_openai(ticker, curr_date):
     config = get_config()
-    client = OpenAI(base_url=config["backend_url"])
+    
+    if not config.get("openai_api_key"):
+        return "Error: OPENAI_API_KEY is required for OpenAI fundamentals functionality. Please set the environment variable or use get_fundamentals_google/get_enhanced_fundamentals as alternatives."
+    
+    # Always use OpenAI API for OpenAI-specific functions
+    client = OpenAI(
+        api_key=config.get("openai_api_key"),
+        base_url=config.get("openai_api_base", "https://api.openai.com/v1")
+    )
 
     response = client.responses.create(
         model=config["quick_think_llm"],
@@ -805,3 +1190,4 @@ def get_fundamentals_openai(ticker, curr_date):
     )
 
     return response.output[1].content[0].text
+

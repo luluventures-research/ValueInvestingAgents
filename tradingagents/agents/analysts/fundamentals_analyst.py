@@ -10,7 +10,19 @@ def create_fundamentals_analyst(llm, toolkit):
         company_name = state["company_of_interest"]
 
         if toolkit.config["online_tools"]:
-            tools = [toolkit.get_fundamentals_openai]
+            # Determine which fundamentals tool to use based on model configuration
+            deep_model = toolkit.config.get("deep_think_llm", "")
+            quick_model = toolkit.config.get("quick_think_llm", "")
+            
+            using_gemini = (
+                deep_model.startswith(("gemini", "google")) or 
+                quick_model.startswith(("gemini", "google"))
+            )
+            
+            if using_gemini:
+                tools = [toolkit.get_enhanced_fundamentals, toolkit.get_fundamentals_google]
+            else:
+                tools = [toolkit.get_enhanced_fundamentals, toolkit.get_fundamentals_openai]
         else:
             tools = [
                 toolkit.get_finnhub_company_insider_sentiment,
@@ -93,6 +105,10 @@ def create_fundamentals_analyst(llm, toolkit):
 
         if len(result.tool_calls) == 0:
             report = result.content
+        else:
+            # If there are tool calls, we'll let the tools execute and come back
+            # The report will be generated on the next iteration when tools are done
+            pass
 
         return {
             "messages": [result],

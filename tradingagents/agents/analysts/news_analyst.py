@@ -9,7 +9,19 @@ def create_news_analyst(llm, toolkit):
         ticker = state["company_of_interest"]
 
         if toolkit.config["online_tools"]:
-            tools = [toolkit.get_global_news_openai, toolkit.get_google_news]
+            # Determine which news tool to use based on model configuration
+            deep_model = toolkit.config.get("deep_think_llm", "")
+            quick_model = toolkit.config.get("quick_think_llm", "")
+            
+            using_gemini = (
+                deep_model.startswith(("gemini", "google")) or 
+                quick_model.startswith(("gemini", "google"))
+            )
+            
+            if using_gemini:
+                tools = [toolkit.get_global_news_google, toolkit.get_google_news]
+            else:
+                tools = [toolkit.get_global_news_openai, toolkit.get_google_news]
         else:
             tools = [
                 toolkit.get_finnhub_news,
