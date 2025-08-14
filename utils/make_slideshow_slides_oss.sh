@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ###############################################################################
-# make_slideshow_slides.sh — create a narrated slideshow video
+# make_slideshow_slides_fixed.sh — create a narrated slideshow video (TIMING FIXED)
 #
 # Dependencies
 # • ffmpeg & ffprobe
@@ -10,7 +10,7 @@
 # • Ollama running a local model (default gpt-oss:latest) on http://localhost:11434
 #
 # Usage:
-#   ./make_slideshow_slides.sh BASENAME [CHUNK] [TITLE] [IMG_DIR] [LANG] [SPEED]
+#   ./make_slideshow_slides_fixed.sh BASENAME [CHUNK] [TITLE] [IMG_DIR] [LANG] [SPEED]
 ###############################################################################
 set -euo pipefail
 
@@ -25,11 +25,14 @@ SPEED="${6:-1.05}"                # audio speed-up 0.5–2.0
 # ── Layout ------------------------------------------------------------------
 W=1920 ; H=1080
 TITLE_SIZE=96
-BODY_SIZE_EN=50                   # English bullets
-BODY_SIZE_ZH=60                   # Chinese bullets
+BODY_SIZE_EN=45                   # English bullets
+BODY_SIZE_ZH=55                   # Chinese bullets
 LEFT_PAD=220 ; RIGHT_PAD=80
 LINE_SP=34  ; TOP_MARGIN=100
 BG="#000000" ; FG="#FFFFFF"
+
+# ── Video timing settings --------------------------------------------------
+TARGET_FPS=2                     # Fixed FPS for predictable timing
 
 # ── Ollama ------------------------------------------------------------------
 : "${OLLAMA_URL:=http://localhost:11434/api/generate}"
@@ -49,7 +52,7 @@ SRT_FILE="${POD%.*}.srt"
 SLIDES_DIR="${BASE}_slides"
 OUT_MP4="${BASE}_slides.mp4"
 
-# Clean previous artifacts (including last run's slides folder)
+# Clean previous artifacts
 if [[ -d "$SLIDES_DIR" ]]; then
   echo "🧹 Cleaning previous slides folder: $SLIDES_DIR"
   rm -rf "$SLIDES_DIR"
@@ -64,13 +67,13 @@ ffmpeg -y -i "$AUDIO_INPUT" -filter:a atempo="$SPEED" \
 whisper "$POD" --model small --language "$LANG" --device cpu \
         --fp16 False --task transcribe --output_format srt -o .
 
-# Recreate a fresh slides directory
+# Fresh slides dir
 mkdir -p "$SLIDES_DIR"
 
 # ── 3. Generate PNG frames --------------------------------------------------
 export W H TITLE_SIZE BODY_SIZE LEFT_PAD RIGHT_PAD LINE_SP TOP_MARGIN \
        BG FG TITLE SLIDES_DIR IMG_DIR IS_ZH SRT_FILE CHUNK \
-       OLLAMA_URL OLLAMA_MODEL
+       OLLAMA_URL OLLAMA_MODEL TARGET_FPS
 
 python <<'PY'
 import os, re, json, requests, pysrt, numpy as np, tqdm
@@ -91,6 +94,7 @@ SLIDES     = Path(os.environ["SLIDES_DIR"]); IMG_DIR=Path(os.environ["IMG_DIR"])
 IS_ZH      = bool(int(os.environ["IS_ZH"]))
 SRT_FILE   = os.environ["SRT_FILE"]; CHUNK=int(os.environ["CHUNK"])
 OLLAMA_URL = os.environ["OLLAMA_URL"]; OLLAMA_MODEL=os.environ["OLLAMA_MODEL"]
+TARGET_FPS = int(os.environ["TARGET_FPS"])
 
 # ── 3-a. Slice transcript ---------------------------------------------------
 subs=pysrt.open(SRT_FILE)
@@ -119,16 +123,19 @@ def en_bullets(txt:str):
     out=[]
     for p in parts:
         p=FIL_EN_I.sub("",p); p=FIL_EN_L.sub("",p).strip().capitalize()
-        p=re.sub(r'\s-\s',' – ',p)        # English: normalize hyphen to en-dash
+        p=re.sub(r'\s-\s',' – ',p)        # English: normalize " - " → en dash with spaces
         if len(p.split())>=3 and p not in out:
             out.append(p if p.endswith(('.','!','?')) else p+'.')
         if len(out)==4: break
     return out
 
 def _normalize_zh_dashes(s:str)->str:
-    # Chinese: unify -, – , — , − to "——" (no spaces)
-    s = re.sub(r'\s*[-–—−]\s*', '——', s)
-    s = s.replace('———', '——')
+    # Case 1: ranges like 2024-2025 or A-B → en dash without spaces
+    s = re.sub(r'(?<=\w)\s*[-−–—]\s*(?=\w)', '–', s)
+    # Case 2: any remaining standalone dash-like → en dash with single spaces
+    s = re.sub(r'\s*[-−–—]\s*', ' – ', s)
+    # Tidy spacing
+    s = re.sub(r'\s{2,}', ' ', s).strip()
     return s
 
 def zh_bullets(txt:str):
@@ -150,7 +157,7 @@ def textrank_cn(txt,k=4):
 def bullets(txt:str):
     return (zh_bullets(txt) or textrank_cn(txt)) if IS_ZH else en_bullets(txt)
 
-# ── 3-c. Font helper (language-aware) ---------------------------------------
+# ── 3-c. Font helper (language-aware; probes en dash too) -------------------
 def font_ok(sz,bold=False):
     if IS_ZH:
         order=[
@@ -174,7 +181,7 @@ def font_ok(sz,bold=False):
     for p in order:
         try:
             f=ImageFont.truetype(p,sz)
-            probe = "测——-" if IS_ZH else "A-–—"
+            probe = "测——–-" if IS_ZH else "A-–—"
             if ImageDraw.Draw(Image.new("RGB",(1,1))).textbbox((0,0),probe,font=f):
                 return f
         except Exception:
@@ -203,22 +210,38 @@ pics=sorted([p for p in Path(os.environ["IMG_DIR"]).glob('*') if p.suffix.lower(
 splash=next((p for p in pics if re.search(r'(thumbnail|封面)',p.stem,re.I)),None)
 if splash: pics.remove(splash)
 
-# Prepare round-robin index for images
 have_pics = len(pics) > 0
 img_idx = 0
 
-# ── 3-e. Save helper --------------------------------------------------------
+# ── 3-e. Save helper with frame duplication for timing ---------------------
 frame=0
-def save(img): global frame; img.save(SLIDES/f"frame_{frame:06d}.png"); frame+=1
+def save_frames(img, duration_sec):
+    """Save frames for specified duration at TARGET_FPS"""
+    global frame
+    frames_needed = max(1, int(duration_sec * TARGET_FPS))
+    for _ in range(frames_needed):
+        img.save(SLIDES/f"frame_{frame:06d}.png")
+        frame += 1
 
-# splash frame ---------------------------------------------------------------
+# splash frame (show for 2 seconds) -----------------------------------------
 if splash:
     sp=Image.open(splash).convert("RGB"); sp.thumbnail((W,H))
-    bg=Image.new("RGB",(W,H),BG); bg.paste(sp,((W-sp.width)//2,(H-sp.height)//2)); save(bg)
+    bg=Image.new("RGB",(W,H),BG); bg.paste(sp,((W-sp.width)//2,(H-sp.height)//2))
+    save_frames(bg, 2.0)
 
-# ── 3-f. Build slides (bullet → image; images loop) ------------------------
+# ── 3-f. Build slides with proper timing -----------------------------------
+total_chunks = len(blocks)
 for idx in tqdm.tqdm(sorted(blocks)):
     text=" ".join(blocks[idx])[:2000]
+    
+    # Calculate timing: each chunk gets equal share of remaining time
+    if have_pics:
+        # With images: split chunk time between bullet slide and image slide
+        bullet_duration = CHUNK * 0.6  # 60% for bullets
+        image_duration = CHUNK * 0.4   # 40% for images
+    else:
+        # Without images: full chunk time for bullet slide
+        bullet_duration = CHUNK
 
     # bullet slide
     slide=Image.new("RGB",(W,H),BG); d=ImageDraw.Draw(slide)
@@ -232,30 +255,25 @@ for idx in tqdm.tqdm(sorted(blocks)):
             y+=BS+SP; first=False
         y+=SP
         if y>H-120: break
-    save(slide)
+    save_frames(slide, bullet_duration)
 
-    # image slide — pick next picture in round-robin if any exist
+    # image slide — round-robin (only if images exist)
     if have_pics:
-        p = pics[img_idx]
-        img_idx = (img_idx + 1) % len(pics)
+        p = pics[img_idx]; img_idx = (img_idx + 1) % len(pics)
         im=Image.open(p).convert("RGB"); im.thumbnail((W,H))
-        bg=Image.new("RGB",(W,H),BG); bg.paste(im,((W-im.width)//2,(H-im.height)//2)); save(bg)
-
-# No leftover image dump — images are looped during narration.
+        bg=Image.new("RGB",(W,H),BG); bg.paste(im,((W-im.width)//2,(H-im.height)//2))
+        save_frames(bg, image_duration)
 
 (SLIDES/"frames_count.txt").write_text(str(frame))
 PY
 
-# ── 4. Assemble video -------------------------------------------------------
-DUR=$(ffprobe -i "$POD" -show_entries format=duration -v quiet -of csv=p=0)
+# ── 4. Assemble video with fixed FPS ---------------------------------------
 FRAMES=$(<"$SLIDES_DIR/frames_count.txt")
-FPS=$(python - <<EOF
-print(float($FRAMES)/float($DUR))
-EOF
-)
-ffmpeg -y -framerate "$FPS" -pattern_type glob -i "$SLIDES_DIR/frame_*.png" \
+
+# Use fixed FPS - frames are already generated for correct timing
+ffmpeg -y -framerate "$TARGET_FPS" -pattern_type glob -i "$SLIDES_DIR/frame_*.png" \
        -i "$POD" -c:v libx264 -r 30 -pix_fmt yuv420p -preset veryfast -crf 18 \
        -c:a aac -b:a 192k -shortest "$OUT_MP4"
 
-echo "✅  $OUT_MP4 created — cleaned old slides dir; images loop round-robin; length matches audio"
+echo "✅  $OUT_MP4 created — timing fixed for images; frames properly synchronized with audio"
 ###############################################################################
